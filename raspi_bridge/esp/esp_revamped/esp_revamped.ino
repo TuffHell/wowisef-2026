@@ -51,21 +51,24 @@ struct PIDGConfig {
 };
 
 // ===================== ESP32-S3 Pin Configuration =====================
-// I2C pins
-#define I2C_SDA 21
-#define I2C_SCL 22
+// I2C pins (ESP32-S3 wiring)
+#define I2C_SDA 16
+#define I2C_SCL 17
 
-// TOF sensor XSHUT pins (VL53L0X for proximity)
-#define TOF_UP_XSHUT 25
-#define TOF_DOWN_XSHUT 26
+// VL53L0X reset (XSHUT) pins, -1 = not wired yet. They were 25 and 26 from a plain-ESP32 pin map:
+// on an ESP32-S3, GPIO 25 does not exist and GPIO 26 is the flash/PSRAM chip select, so they must
+// not be driven. Set the real pins here before turning TOF_ENABLED on (the sensors share address
+// 0x29 at power-on and need these pins to be brought up one at a time).
+#define TOF_UP_XSHUT -1
+#define TOF_DOWN_XSHUT -1
 
-// L298N Motor Driver Pins
-#define MOTOR_A_EN 32
-#define MOTOR_A_IN1 33
-#define MOTOR_A_IN2 27
-#define MOTOR_B_EN 14
-#define MOTOR_B_IN1 12
-#define MOTOR_B_IN2 13
+// L298N Motor Driver Pins (ESP32-S3 wiring: IN1 14, IN2 13, ENA 12, IN3 11, IN4 10, ENB 9)
+#define MOTOR_A_EN 12
+#define MOTOR_A_IN1 14
+#define MOTOR_A_IN2 13
+#define MOTOR_B_EN 9
+#define MOTOR_B_IN1 11
+#define MOTOR_B_IN2 10
 
 // LED
 #define LED_PIN 2
@@ -364,22 +367,25 @@ void setMotors(int speed, Direction dir) {
   ledcWrite(MOTOR_PWM_B, speed);
 }
 
+// Drives a VL53L0X reset pin; does nothing for a pin set to -1 (not wired)
+void xshut(int pin, int level) {
+  if (pin < 0) return;
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+}
+
 // ===================== Sensor init (original TOF) =====================
 uint8_t initTOF() {
   if (!TOF_ENABLED) {
-    pinMode(TOF_UP_XSHUT, OUTPUT);
-    pinMode(TOF_DOWN_XSHUT, OUTPUT);
-    digitalWrite(TOF_UP_XSHUT, LOW);
-    digitalWrite(TOF_DOWN_XSHUT, LOW);
+    xshut(TOF_UP_XSHUT, LOW);
+    xshut(TOF_DOWN_XSHUT, LOW);
     return 0;
   }
 
-  pinMode(TOF_UP_XSHUT, OUTPUT);
-  pinMode(TOF_DOWN_XSHUT, OUTPUT);
-  digitalWrite(TOF_DOWN_XSHUT, LOW);
-  digitalWrite(TOF_UP_XSHUT, LOW);
+  xshut(TOF_DOWN_XSHUT, LOW);
+  xshut(TOF_UP_XSHUT, LOW);
   delay(50);
-  digitalWrite(TOF_UP_XSHUT, HIGH);
+  xshut(TOF_UP_XSHUT, HIGH);
   delay(50);
   
   uint8_t r = 0;
@@ -391,7 +397,7 @@ uint8_t initTOF() {
     r |= TOF_INIT_UP_OK;
   }
   
-  digitalWrite(TOF_DOWN_XSHUT, HIGH);
+  xshut(TOF_DOWN_XSHUT, HIGH);
   delay(50);
   if (tof_down.init()) {
     tof_down.setAddress(0x31);
@@ -406,7 +412,7 @@ void updateSensorRecovery(bool which_up) {
   unsigned long now = millis();
   SensorRecoveryState& state = which_up ? recovery_up_state : recovery_down_state;
   unsigned long& state_start = which_up ? recovery_up_state_start_ms : recovery_down_state_start_ms;
-  uint8_t xshut_pin = which_up ? TOF_UP_XSHUT : TOF_DOWN_XSHUT;
+  int xshut_pin = which_up ? TOF_UP_XSHUT : TOF_DOWN_XSHUT;
   
   switch (state) {
     case RECOVERY_IDLE:
@@ -415,7 +421,7 @@ void updateSensorRecovery(bool which_up) {
       
     case RECOVERY_XSHUT_LOW:
       if ((long)(now - state_start) >= 20) {
-        digitalWrite(xshut_pin, HIGH);
+        xshut(xshut_pin, HIGH);
         state = RECOVERY_XSHUT_HIGH;
         state_start = now;
       }
@@ -466,11 +472,11 @@ bool reinitOneSensor(bool which_up) {
   // M-6 FIX: Start non-blocking recovery instead of blocking
   unsigned long now = millis();
   if (which_up) {
-    digitalWrite(TOF_UP_XSHUT, LOW);
+    xshut(TOF_UP_XSHUT, LOW);
     recovery_up_state = RECOVERY_XSHUT_LOW;
     recovery_up_state_start_ms = now;
   } else {
-    digitalWrite(TOF_DOWN_XSHUT, LOW);
+    xshut(TOF_DOWN_XSHUT, LOW);
     recovery_down_state = RECOVERY_XSHUT_LOW;
     recovery_down_state_start_ms = now;
   }
@@ -815,10 +821,8 @@ void setup() {
   servo_hub.reset();
   servo_hub.setPWMFreq(50);
 
-  pinMode(TOF_UP_XSHUT, OUTPUT);
-  pinMode(TOF_DOWN_XSHUT, OUTPUT);
-  digitalWrite(TOF_UP_XSHUT, LOW);
-  digitalWrite(TOF_DOWN_XSHUT, LOW);
+  xshut(TOF_UP_XSHUT, LOW);
+  xshut(TOF_DOWN_XSHUT, LOW);
 
   // Ground sensor first, while the VL53L0Xs are held in reset: it shares their 0x29 default
   // address and moves to GROUND_SENSOR_ADDR before they come up.

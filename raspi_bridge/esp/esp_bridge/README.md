@@ -10,7 +10,7 @@ The ESP32 Bridge firmware is a port of the Arduino bridge controller, designed t
 
 - **Microcontroller**: ESP32-S3
 - **Communication**: Serial UART (115200 baud)
-- **I2C Bus**: SDA=GPIO21, SCL=GPIO22
+- **I2C Bus**: SDA=GPIO16, SCL=GPIO17
 - **Status Indicator**: Onboard LED (GPIO2)
 
 
@@ -40,14 +40,14 @@ The ESP32 Bridge firmware is a port of the Arduino bridge controller, designed t
 
 ```
 Motor A:
-  EN  → GPIO32 (PWM Channel 0)
-  IN1 → GPIO33 (Direction)
-  IN2 → GPIO27 (Direction)
+  ENA → GPIO12 (PWM)
+  IN1 → GPIO14 (Direction)
+  IN2 → GPIO13 (Direction)
 
 Motor B:
-  EN  → GPIO14 (PWM Channel 1)
-  IN1 → GPIO12 (Direction)
-  IN2 → GPIO13 (Direction)
+  ENB → GPIO9  (PWM)
+  IN3 → GPIO11 (Direction)
+  IN4 → GPIO10 (Direction)
 ```
 
 
@@ -55,8 +55,8 @@ Motor B:
 ### I2C Devices
 
 ```
-SDA → GPIO21
-SCL → GPIO22
+SDA → GPIO16
+SCL → GPIO17
 
 Connected devices:
   - PCA9685 Servo Hub (0x40)
@@ -71,8 +71,8 @@ Connected devices:
 ### TOF Sensor Control
 
 ```
-Upper TOF XSHUT  → GPIO25
-Lower TOF XSHUT  → GPIO26
+Upper TOF XSHUT  → not wired yet (-1; GPIO25 doesn't exist on an S3)
+Lower TOF XSHUT  → not wired yet (-1; GPIO26 is the S3's flash/PSRAM chip select)
 ```
 
 

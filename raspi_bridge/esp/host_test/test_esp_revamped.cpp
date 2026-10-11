@@ -101,9 +101,19 @@ int main() {
   Serial.out.clear(); stream("0,FORWARD,axon_open,manual", 30);
   CHECK(said("ERR:unknown cmd:axon_open") && !said("ACK:axon_open"), "unimplemented command reported, not ACKed");
 
+  std::cout << "pins (ESP32-S3)\n";
+  stream("120,FORWARD,NONE,manual", 100);
+  CHECK(g_pin[MOTOR_A_IN1] == 1 && g_pin[MOTOR_A_IN2] == 0 && g_pin[MOTOR_B_IN1] == 1 && g_pin[MOTOR_B_IN2] == 0,
+        "forward: IN1/IN3 high, IN2/IN4 low");
+  {
+    bool ok = true;   // S3: GPIO 22-25 don't exist, 26-32 are the flash/PSRAM pins
+    for (auto& m : {g_pin, g_pwm}) for (auto& kv : m) if ((kv.first >= 22 && kv.first <= 32) || kv.first > 48) ok = false;
+    CHECK(ok, "every pin the firmware drives exists on an ESP32-S3 and is not a flash pin");
+  }
+
   std::cout << "I2C pins that don't exist\n";
   g_i2c_ok = false; Serial.out.clear(); setup();
-  CHECK(said("INIT: I2C failed to start on SDA=21 SCL=22"), "boot says so when Wire.begin fails");
+  CHECK(said("INIT: I2C failed to start on SDA=16 SCL=17"), "boot says so when Wire.begin fails");
 
   std::cout << (fails ? "FAILED: " + std::to_string(fails) : std::string("ALL PASSED")) << "\n";
   return fails != 0;

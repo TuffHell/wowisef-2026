@@ -24,13 +24,12 @@
  *   estop                 - sent as "0,FORWARD,estop". Immediately
  *                           stops the drive motors and latches.
  *
- * ESP32 Pin Map:
- *   - I2C: SDA=21, SCL=22 (default ESP32 I2C pins)
- *   - VL53L0X up XSHUT: GPIO 25
- *   - VL53L0X down XSHUT: GPIO 26
- *   - L298N Motor A: EN=32, IN1=33, IN2=27
- *   - L298N Motor B: EN=14, IN1=12, IN2=13
- *   - LED: GPIO 2 (onboard LED)
+ * ESP32-S3 Pin Map:
+ *   - I2C: SDA=16, SCL=17
+ *   - VL53L0X up/down XSHUT: not wired yet (-1)
+ *   - L298N Motor A: EN=12, IN1=14, IN2=13
+ *   - L298N Motor B: EN=9, IN1(IN3)=11, IN2(IN4)=10
+ *   - LED: GPIO 2
  */
 
 #include <Wire.h>
@@ -38,21 +37,24 @@
 #include <VL53L0X.h>
 
 // ===================== ESP32 Pin Configuration =====================
-// I2C pins (ESP32 default)
-#define I2C_SDA 21
-#define I2C_SCL 22
+// I2C pins (ESP32-S3 wiring)
+#define I2C_SDA 16
+#define I2C_SCL 17
 
-// TOF sensor XSHUT pins
-#define TOF_UP_XSHUT 25
-#define TOF_DOWN_XSHUT 26
+// VL53L0X reset (XSHUT) pins, -1 = not wired yet. They were 25 and 26 from a plain-ESP32 pin map:
+// on an ESP32-S3, GPIO 25 does not exist and GPIO 26 is the flash/PSRAM chip select, so they must
+// not be driven. Set the real pins here before turning TOF_ENABLED on (the sensors share address
+// 0x29 at power-on and need these pins to be brought up one at a time).
+#define TOF_UP_XSHUT -1
+#define TOF_DOWN_XSHUT -1
 
-// L298N Motor Driver Pins
-#define MOTOR_A_EN 32
-#define MOTOR_A_IN1 33
-#define MOTOR_A_IN2 27
-#define MOTOR_B_EN 14
-#define MOTOR_B_IN1 12
-#define MOTOR_B_IN2 13
+// L298N Motor Driver Pins (ESP32-S3 wiring: IN1 14, IN2 13, ENA 12, IN3 11, IN4 10, ENB 9)
+#define MOTOR_A_EN 12
+#define MOTOR_A_IN1 14
+#define MOTOR_A_IN2 13
+#define MOTOR_B_EN 9
+#define MOTOR_B_IN1 11
+#define MOTOR_B_IN2 10
 
 // LED
 #define LED_PIN 2
@@ -266,22 +268,25 @@ void setMotors(int speed, Direction dir) {
   ledcWrite(MOTOR_PWM_B, speed);
 }
 
+// Drives a VL53L0X reset pin; does nothing for a pin set to -1 (not wired)
+void xshut(int pin, int level) {
+  if (pin < 0) return;
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+}
+
 // ===================== Sensor init =====================
 uint8_t initTOF() {
   if (!TOF_ENABLED) {
-    pinMode(TOF_UP_XSHUT, OUTPUT);
-    pinMode(TOF_DOWN_XSHUT, OUTPUT);
-    digitalWrite(TOF_UP_XSHUT, LOW);
-    digitalWrite(TOF_DOWN_XSHUT, LOW);
+    xshut(TOF_UP_XSHUT, LOW);
+    xshut(TOF_DOWN_XSHUT, LOW);
     return 0;
   }
 
-  pinMode(TOF_UP_XSHUT, OUTPUT);
-  pinMode(TOF_DOWN_XSHUT, OUTPUT);
-  digitalWrite(TOF_DOWN_XSHUT, LOW);
-  digitalWrite(TOF_UP_XSHUT, LOW);
+  xshut(TOF_DOWN_XSHUT, LOW);
+  xshut(TOF_UP_XSHUT, LOW);
   delay(50);
-  digitalWrite(TOF_UP_XSHUT, HIGH);
+  xshut(TOF_UP_XSHUT, HIGH);
   delay(50);
   
   uint8_t r = 0;
@@ -293,7 +298,7 @@ uint8_t initTOF() {
     r |= TOF_INIT_UP_OK;
   }
   
-  digitalWrite(TOF_DOWN_XSHUT, HIGH);
+  xshut(TOF_DOWN_XSHUT, HIGH);
   delay(50);
   if (tof_down.init()) {
     tof_down.setAddress(0x31);
@@ -308,9 +313,9 @@ bool reinitOneSensor(bool which_up) {
     return false;
   }
   if (which_up) {
-    digitalWrite(TOF_UP_XSHUT, LOW);
+    xshut(TOF_UP_XSHUT, LOW);
     delay(20);
-    digitalWrite(TOF_UP_XSHUT, HIGH);
+    xshut(TOF_UP_XSHUT, HIGH);
     delay(50);
     tof_up = VL53L0X();  // the reset chip answers at 0x29 again, not 0x30
     tof_up.setTimeout(TOF_IO_TIMEOUT_MS);
@@ -319,9 +324,9 @@ bool reinitOneSensor(bool which_up) {
     tof_up.startContinuous();
     return true;
   } else {
-    digitalWrite(TOF_DOWN_XSHUT, LOW);
+    xshut(TOF_DOWN_XSHUT, LOW);
     delay(20);
-    digitalWrite(TOF_DOWN_XSHUT, HIGH);
+    xshut(TOF_DOWN_XSHUT, HIGH);
     delay(50);
     tof_down = VL53L0X();  // the reset chip answers at 0x29 again, not 0x31
     tof_down.setTimeout(TOF_IO_TIMEOUT_MS);
@@ -480,10 +485,8 @@ void setup() {
   reportI2CBus(i2c_ok);
 
   // TOF sensor initialization
-  pinMode(TOF_UP_XSHUT, OUTPUT);
-  pinMode(TOF_DOWN_XSHUT, OUTPUT);
-  digitalWrite(TOF_UP_XSHUT, LOW);
-  digitalWrite(TOF_DOWN_XSHUT, LOW);
+  xshut(TOF_UP_XSHUT, LOW);
+  xshut(TOF_DOWN_XSHUT, LOW);
 
   uint8_t tof_r = initTOF();
   tof_up_ready = (tof_r & TOF_INIT_UP_OK) != 0;

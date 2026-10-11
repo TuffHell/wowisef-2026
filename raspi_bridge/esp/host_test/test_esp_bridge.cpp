@@ -39,7 +39,7 @@ int main() {
 
   std::cout << "laptop's 4-field lines (gamepad_to_arduino_direct.py)\n";
   clear_out(); send("150,FORWARD,NONE,manual");
-  CHECK(g_pwm[32] == 150 && g_pwm[14] == 150 && g_pin[33] == 1, "drive runs at 150 forward");
+  CHECK(g_pwm[MOTOR_A_EN] == 150 && g_pwm[MOTOR_B_EN] == 150 && g_pin[MOTOR_A_IN1] == 1, "drive runs at 150 forward");
   clear_out(); send("0,FORWARD,up_detach,manual");
   CHECK(said("ACK:up_detach") && !said("ACK:up_detach,manual"), "up_detach acknowledged as a real command");
   CHECK(upper_opened(), "upper gripper opens immediately");
@@ -65,9 +65,9 @@ int main() {
   send("150,FORWARD,NONE,manual");
   clear_out(); send("150,FORWARD,down_detach,manual", 20);
   send("150,FORWARD,estop,manual", 20);
-  CHECK(g_pwm[32] == 0 && g_pwm[14] == 0, "motors stop on estop, mid-sequence (was blocked 1.5 s before)");
+  CHECK(g_pwm[MOTOR_A_EN] == 0 && g_pwm[MOTOR_B_EN] == 0, "motors stop on estop, mid-sequence (was blocked 1.5 s before)");
   send("200,FORWARD,NONE,manual");
-  CHECK(g_pwm[32] == 0, "latched: the 30 Hz drive stream cannot restart the motors");
+  CHECK(g_pwm[MOTOR_A_EN] == 0, "latched: the 30 Hz drive stream cannot restart the motors");
   idle(1600);
   CHECK(g_servo_us[15] == 1733 && g_servo_us[14] == 1266, "the pending bar move still completes after the e-stop");
   clear_out(); send("0,FORWARD,down_attach,manual"); idle(1600);
@@ -75,13 +75,23 @@ int main() {
 
   std::cout << "link watchdog\n";
   send("180,BACKWARD,NONE,manual");
-  CHECK(g_pwm[32] == 180, "driving at 180");
+  CHECK(g_pwm[MOTOR_A_EN] == 180, "driving at 180");
   clear_out(); idle(400);
-  CHECK(g_pwm[32] == 180, "still driving after 400 ms of silence");
+  CHECK(g_pwm[MOTOR_A_EN] == 180, "still driving after 400 ms of silence");
   idle(200);
-  CHECK(g_pwm[32] == 0 && said("ERR:link timeout"), "stops after 500 ms with no line from the laptop");
+  CHECK(g_pwm[MOTOR_A_EN] == 0 && said("ERR:link timeout"), "stops after 500 ms with no line from the laptop");
   send("120,FORWARD,NONE,manual");
-  CHECK(g_pwm[32] == 120, "resumes when lines arrive again");
+  CHECK(g_pwm[MOTOR_A_EN] == 120, "resumes when lines arrive again");
+
+  send("120,FORWARD,NONE,manual");
+  std::cout << "pins (ESP32-S3)\n";
+  CHECK(g_pin[MOTOR_A_IN1] == 1 && g_pin[MOTOR_A_IN2] == 0 && g_pin[MOTOR_B_IN1] == 1 && g_pin[MOTOR_B_IN2] == 0,
+        "forward: IN1/IN3 high, IN2/IN4 low");
+  {
+    bool ok = true;   // S3: GPIO 22-25 don't exist, 26-32 are the flash/PSRAM pins
+    for (auto& m : {g_pin, g_pwm}) for (auto& kv : m) if ((kv.first >= 22 && kv.first <= 32) || kv.first > 48) ok = false;
+    CHECK(ok, "every pin the firmware drives exists on an ESP32-S3 and is not a flash pin");
+  }
 
   std::cout << "other inputs\n";
   clear_out(); send("0,FORWARD,axon_open,manual");

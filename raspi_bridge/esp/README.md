@@ -6,23 +6,25 @@ ESP32 port of the Arduino bridge for the climbing robot. Maintains the same Rasp
 
 ### Pin Mapping
 
+Board: ESP32-S3 (Arduino IDE: "ESP32S3 Dev Module").
+
 **I2C (for PCA9685 servo hub and VL53L0X sensors):**
-- SDA: GPIO 21 (ESP32 default)
-- SCL: GPIO 22 (ESP32 default)
+- SDA: GPIO 16
+- SCL: GPIO 17
 
 **VL53L0X Time-of-Flight Sensors:**
-- Up sensor XSHUT: GPIO 25
-- Down sensor XSHUT: GPIO 26
+- Up / down sensor XSHUT: not wired yet (`-1` in the sketch). The old values, GPIO 25 and 26,
+  don't work on an S3: 25 doesn't exist and 26 is the flash/PSRAM chip select.
 
 **L298N Motor Driver (Motor A - Left):**
-- EN (Enable/Speed): GPIO 32
-- IN1 (Direction): GPIO 33
-- IN2 (Direction): GPIO 27
+- ENA (Enable/Speed): GPIO 12
+- IN1 (Direction): GPIO 14
+- IN2 (Direction): GPIO 13
 
 **L298N Motor Driver (Motor B - Right):**
-- EN (Enable/Speed): GPIO 14
-- IN1 (Direction): GPIO 12
-- IN2 (Direction): GPIO 13
+- ENB (Enable/Speed): GPIO 9
+- IN3 (Direction): GPIO 11
+- IN4 (Direction): GPIO 10
 
 **LED:**
 - GPIO 2 (onboard LED)
