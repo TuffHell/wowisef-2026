@@ -98,7 +98,7 @@ WorkingDirectory=/opt/climbingrobot
 # mock mode immediately.
 EnvironmentFile=-/etc/default/climbingrobot
 ExecStart=/opt/climbingrobot/venv/bin/python /opt/climbingrobot/pi_serial_bridge.py \\
-    --auto-test --wait-serial=-1 --wait-device=-1
+    --auto-test --wait-serial=-1
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=120

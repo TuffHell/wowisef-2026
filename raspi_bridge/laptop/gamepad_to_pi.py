@@ -241,6 +241,8 @@ async def main_async(args):
                     active_command, hold_counter = "both_attach", HOLD_FRAMES
                 elif just_pressed(18):
                     active_command, hold_counter = "both_detach", HOLD_FRAMES
+                elif just_pressed(10):    # PS button -> emergency stop, as in gamepad_to_arduino_direct.py
+                    active_command, hold_counter = "estop", HOLD_FRAMES
 
                 if hold_counter > 0:
                     command_out = active_command

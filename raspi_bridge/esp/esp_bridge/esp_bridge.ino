@@ -74,11 +74,16 @@
 #endif
 
 // Declared before any function: the Arduino builder inserts function prototypes above the
-// first function in the file, and setMotors(int, Direction) needs the type to exist there.
+// first function in the file, and setMotors(int, Direction) and scheduleStep(ServoStep)
+// need these types to exist there.
 enum Direction { STOP, FORWARD, BACKWARD };
+typedef void (*ServoStep)();  // the delayed second move of a gripper command
 
 // ===================== TOF Configuration =====================
 const int TOF_MEASUREMENT_TIME = 10000;
+// Without a timeout the VL53L0X library waits forever for a reading, freezing loop() (and the
+// motors at their last speed) if a sensor drops off the bus.
+const uint16_t TOF_IO_TIMEOUT_MS = 50;
 const bool TOF_ENABLED = false;  // Set to true to enable TOF sensors
 
 VL53L0X tof_up;
@@ -131,6 +136,24 @@ char current_dir[10] = "FORWARD";
 
 // ===================== Servo timing configuration =====================
 const unsigned long delay_to_pose = 1500;
+
+// ===================== Servo sequencing (non-blocking) =====================
+// Each gripper command is two moves delay_to_pose apart. The second move is scheduled here
+// rather than delay()-ed, so loop() keeps handling the e-stop and the link watchdog while
+// the servos move. A new gripper command while one is still running gets ERR:busy.
+ServoStep pending_step = nullptr;
+unsigned long pending_step_at = 0;
+
+// Gripper state for the interlock: one module must stay clamped, so a single detach is
+// refused while the other gripper is open. setup() closes both.
+bool upper_open = false;
+bool lower_open = false;
+
+// ===================== Link watchdog =====================
+// The laptop sends a line every 33 ms. If nothing arrives for this long (laptop crashed,
+// USB cable out, Pi Wi-Fi dropped), the drive motors stop instead of running on.
+const unsigned long LINK_TIMEOUT_MS = 500;
+unsigned long last_rx_ms = 0;
 
 // ===================== LED =====================
 unsigned long led_flash_timer = 0;
@@ -262,6 +285,8 @@ uint8_t initTOF() {
   delay(50);
   
   uint8_t r = 0;
+  tof_up.setTimeout(TOF_IO_TIMEOUT_MS);
+  tof_down.setTimeout(TOF_IO_TIMEOUT_MS);
   if (tof_up.init()) {
     tof_up.setAddress(0x30);
     tof_up.startContinuous();
@@ -287,6 +312,8 @@ bool reinitOneSensor(bool which_up) {
     delay(20);
     digitalWrite(TOF_UP_XSHUT, HIGH);
     delay(50);
+    tof_up = VL53L0X();  // the reset chip answers at 0x29 again, not 0x30
+    tof_up.setTimeout(TOF_IO_TIMEOUT_MS);
     if (!tof_up.init()) return false;
     tof_up.setAddress(0x30);
     tof_up.startContinuous();
@@ -296,6 +323,8 @@ bool reinitOneSensor(bool which_up) {
     delay(20);
     digitalWrite(TOF_DOWN_XSHUT, HIGH);
     delay(50);
+    tof_down = VL53L0X();  // the reset chip answers at 0x29 again, not 0x31
+    tof_down.setTimeout(TOF_IO_TIMEOUT_MS);
     if (!tof_down.init()) return false;
     tof_down.setAddress(0x31);
     tof_down.startContinuous();
@@ -406,9 +435,8 @@ void emitStatusLine() {
 
 // ===================== Setup =====================
 void setup() {
-  // Each servo command blocks for delay_to_pose (1.5 s) while the laptop keeps streaming at
-  // 30 Hz (~1 KB in 1.5 s). The default 256-byte RX buffer overflows and drops the next
-  // command; 2 KB holds the backlog. Must be set before Serial.begin().
+  // Headroom for the 30 Hz stream if loop() is ever held up (e.g. a sensor re-init); the
+  // default 256 bytes is under 10 lines. Must be set before Serial.begin().
   Serial.setRxBufferSize(2048);
   Serial.begin(115200);
   Serial.setTimeout(10);
@@ -488,12 +516,26 @@ void loop() {
     }
     
     if (payload.length() > 0) {
+      last_rx_ms = millis();
       if (payload.startsWith("WARN:")) {
         parseAndExecuteWarning(payload);
       } else {
         parseAndExecutePayload(payload);
       }
     }
+  }
+
+  // Second move of a gripper command, once delay_to_pose has passed
+  if (pending_step && (long)(now - pending_step_at) >= 0) {
+    ServoStep step = pending_step;
+    pending_step = nullptr;
+    step();
+  }
+
+  // Link watchdog: no line from the laptop for LINK_TIMEOUT_MS -> stop driving
+  if (current_speed > 0 && (long)(now - last_rx_ms) > (long)LINK_TIMEOUT_MS) {
+    stopMotors();
+    Serial.println("ERR:link timeout, motors stopped");
   }
 
   // 2. Sensor watchdog
@@ -619,6 +661,20 @@ void setDriveMotors(int speed, String direction) {
 }
 
 void executeCommand(String cmd) {
+  bool gripper_cmd = cmd == "up_attach" || cmd == "up_detach" || cmd == "down_attach" ||
+                     cmd == "down_detach" || cmd == "both_attach" || cmd == "both_detach";
+  if (gripper_cmd && pending_step) {
+    Serial.print("ERR:busy:");
+    Serial.println(cmd);
+    return;
+  }
+  if ((cmd == "up_detach" && lower_open) || (cmd == "down_detach" && upper_open)) {
+    // Opening this gripper too would leave nothing clamped to the post
+    Serial.print("ERR:interlock, other gripper is open:");
+    Serial.println(cmd);
+    return;
+  }
+
   if (cmd == "down_detach") {
     down_detach();
   }
@@ -687,42 +743,54 @@ void setServoAngle(int channelL, int channelR, float angle) {
   servo_hub.writeMicroseconds(channelR, angleToPulse(180 - angle));
 }
 
+void scheduleStep(ServoStep step) {
+  pending_step = step;
+  pending_step_at = millis() + delay_to_pose;
+}
+
+// Every attach closes both grippers, as before
+void closeBothGrippers() {
+  setServoAngle(chServoUpL, chServoUpR, close_position);
+  setServoAngle(chServoDownL, chServoDownR, close_position);
+  upper_open = false;
+  lower_open = false;
+}
+
+void openBothGrippers() {
+  setServoAngle(chServoUpL, chServoUpR, open_position);
+  setServoAngle(chServoDownL, chServoDownR, open_position);
+  upper_open = true;
+  lower_open = true;
+}
+
 void up_detach() {
   setServoAngle(chServoUpL, chServoUpR, open_position);
-  delay(delay_to_pose);
-  setBarPosition("up_detach");
+  upper_open = true;
+  scheduleStep([] { setBarPosition("up_detach"); });
 }
 
 void down_detach() {
   setServoAngle(chServoDownL, chServoDownR, open_position);
-  delay(delay_to_pose);
-  setBarPosition("down_detach");
+  lower_open = true;
+  scheduleStep([] { setBarPosition("down_detach"); });
 }
 
 void up_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
+  scheduleStep(closeBothGrippers);
 }
 
 void down_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
+  scheduleStep(closeBothGrippers);
 }
 
 void both_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
+  scheduleStep(closeBothGrippers);
 }
 
 void both_detach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, open_position);
-  setServoAngle(chServoDownL, chServoDownR, open_position);
+  scheduleStep(openBothGrippers);
 }
