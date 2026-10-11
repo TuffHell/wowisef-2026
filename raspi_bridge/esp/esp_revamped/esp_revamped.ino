@@ -272,21 +272,32 @@ enum GripperState { GRIPPER_OPEN, GRIPPER_CLOSED };
 GripperState upperGripperState = GRIPPER_CLOSED;  // Start with both closed
 GripperState lowerGripperState = GRIPPER_CLOSED;
 
-// ===================== Servo Hub =====================
-Adafruit_PWMServoDriver servo_hub = Adafruit_PWMServoDriver(0x40);
+// ===================== Servo Hubs =====================
+// Two PCA9685 boards: 0x40 carries the bar (linkage) servos and the Axon, 0x60 the gripper servos
+const uint8_t SERVO_HUB_ADDR = 0x40;
+const uint8_t GRIPPER_HUB_ADDR = 0x60;
+Adafruit_PWMServoDriver servo_hub = Adafruit_PWMServoDriver(SERVO_HUB_ADDR);
+Adafruit_PWMServoDriver gripper_hub = Adafruit_PWMServoDriver(GRIPPER_HUB_ADDR);
 
-const int chServoUpL = 13;
-const int chServoUpR = 12;
-const int chServoDownL = 9;
-const int chServoDownR = 8;
+// Gripper servos, on gripper_hub (0x60)
+const int chServoUpL = 0;
+const int chServoUpR = 1;
+const int chServoDownL = 2;
+const int chServoDownR = 3;
+// Bar servos and the Axon, on servo_hub (0x40)
 const int chServoBarUpL = 15;
 const int chServoBarUpR = 14;
-const int chServoBarDownL = 11;
-const int chServoBarDownR = 10;
+const int chServoBarDownL = 13;
+const int chServoBarDownR = 12;
+const int chAxon = 8;
 
 const float open_position = 180;
 const float close_position = 27;
 const float angle_change = 35;
+// Axon servo (D-pad left / right). Starting values: the gripper open/close angles, inside the
+// standard 1000-2000 us pulse range. Replace them with the Axon's real angles once tested.
+const float axon_open_position = open_position;
+const float axon_close_position = close_position;
 
 // ===================== Helper Functions =====================
 static uint16_t angleToPulse(float angle, float minAngle=0, float maxAngle=180,
@@ -801,6 +812,13 @@ void reportI2CBus(bool started) {
     }
   }
   Serial.println(found ? "" : " none");
+  for (uint8_t addr : {SERVO_HUB_ADDR, GRIPPER_HUB_ADDR}) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) {
+      Serial.printf("INIT: servo board 0x%02X (%s) NOT FOUND\n", addr,
+                    addr == GRIPPER_HUB_ADDR ? "grippers" : "bars, Axon");
+    }
+  }
 }
 
 void setup() {
@@ -820,6 +838,9 @@ void setup() {
   servo_hub.begin();
   servo_hub.reset();
   servo_hub.setPWMFreq(50);
+  gripper_hub.begin();
+  gripper_hub.reset();
+  gripper_hub.setPWMFreq(50);
 
   xshut(TOF_UP_XSHUT, LOW);
   xshut(TOF_DOWN_XSHUT, LOW);
@@ -1127,6 +1148,12 @@ void executeCommand(String cmd) {
   else if (cmd == "both_detach") {
     both_detach();
   }
+  else if (cmd == "axon_open") {
+    servo_hub.writeMicroseconds(chAxon, angleToPulse(axon_open_position));
+  }
+  else if (cmd == "axon_close") {
+    servo_hub.writeMicroseconds(chAxon, angleToPulse(axon_close_position));
+  }
   else if (cmd == "estop") {
     forceManual();  // otherwise the altitude controller restarted the motors on the next loop
     stopMotors();
@@ -1138,7 +1165,7 @@ void executeCommand(String cmd) {
     }
   }
   else {
-    // Not a command this sketch knows (e.g. axon_open / axon_close). Say so instead of
+    // Not a command this sketch knows. Say so instead of
     // echoing ACK, which made a command that did nothing look like it had worked.
     Serial.print("ERR:unknown cmd:");
     Serial.println(cmd);
@@ -1173,9 +1200,10 @@ void setBarPosition(String pose) {
   current_bar_pose = pose;
 }
 
+// Gripper pairs, on the gripper board; the right servo is mirrored
 void setServoAngle(int channelL, int channelR, float angle) {
-  servo_hub.writeMicroseconds(channelL, angleToPulse(angle));
-  servo_hub.writeMicroseconds(channelR, angleToPulse(180 - angle));
+  gripper_hub.writeMicroseconds(channelL, angleToPulse(angle));
+  gripper_hub.writeMicroseconds(channelR, angleToPulse(180 - angle));
 }
 
 void scheduleStep(ServoStep step) {

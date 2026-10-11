@@ -6,14 +6,24 @@
 #include "Adafruit_PWMServoDriver.h"
 #include <iostream>
 unsigned long g_now = 1000;
-std::map<int, int> g_pin, g_pwm, g_servo_us;
+std::map<int, int> g_pin, g_pwm;
+std::map<int, std::map<int, int>> g_servo;
 SerialShim Serial;
 WireShim Wire;
 bool g_i2c_ok = true;
-std::set<int> g_i2c_devices = {0x28, 0x29, 0x40, 0x41};   // BNO055, VL53L1X, two PCA9685 boards
+std::set<int> g_i2c_devices = {0x28, 0x29, 0x40, 0x60};   // BNO055, VL53L1X, the two PCA9685 boards
 bool g_bno_present = true;
 uint16_t g_ground_mm = 500;
 #include "build/esp_revamped_pre.cpp"
+
+int grip(int ch) { return g_servo[GRIPPER_HUB_ADDR][ch]; }   // gripper board, 0x60
+int bar(int ch) { return g_servo[SERVO_HUB_ADDR][ch]; }      // bar + Axon board, 0x40
+// Grippers only ever written on 0x60 channels 0-3; bars and Axon only on 0x40
+bool boards_kept_apart() {
+  for (auto& kv : g_servo[GRIPPER_HUB_ADDR]) if (kv.first > 3) return false;
+  for (auto& kv : g_servo[SERVO_HUB_ADDR]) if (kv.first <= 3) return false;
+  return !g_servo[GRIPPER_HUB_ADDR].empty() && !g_servo[SERVO_HUB_ADDR].empty();
+}
 
 static int fails = 0;
 #define CHECK(cond, what) do { if (cond) std::cout << "  ok    " << what << "\n"; \
@@ -34,8 +44,8 @@ int main() {
   setup();
   std::cout << "boot\n";
   CHECK(upperGripperState == GRIPPER_CLOSED && lowerGripperState == GRIPPER_CLOSED &&
-        g_servo_us[13] == 1150 && g_servo_us[9] == 1150, "both grippers closed at power-on");
-  CHECK(said("INIT: i2c devices: 0x28 0x29 0x40 0x41"), "boot lists every I2C device, both servo boards included");
+        grip(chServoUpL) == 1150 && grip(chServoDownL) == 1150, "both grippers closed at power-on");
+  CHECK(said("INIT: i2c devices: 0x28 0x29 0x40 0x60") && !said("NOT FOUND"), "boot lists every I2C device, both servo boards included");
   stream("0,FORWARD,NONE,manual", 4000);   // let the ground filter settle on 500 mm
 
   std::cout << "altitude hold (R2)\n";
@@ -99,7 +109,12 @@ int main() {
   stream("0,FORWARD,up_attach,manual", 30); idle(delay_to_pose + 100);
   CHECK(upperGripperState == GRIPPER_CLOSED && lowerGripperState == GRIPPER_CLOSED, "up_attach: both recorded closed, as both are");
   Serial.out.clear(); stream("0,FORWARD,axon_open,manual", 30);
-  CHECK(said("ERR:unknown cmd:axon_open") && !said("ACK:axon_open"), "unimplemented command reported, not ACKed");
+  CHECK(said("ACK:axon_open") && bar(chAxon) == 2000, "D-pad left: Axon on 0x40 channel 8 opens");
+  Serial.out.clear(); stream("0,FORWARD,axon_close,manual", 30);
+  CHECK(said("ACK:axon_close") && bar(chAxon) == 1150, "D-pad right: Axon closes");
+  CHECK(boards_kept_apart(), "grippers only on board 0x60 (ch 0-3), bars and Axon only on 0x40");
+  Serial.out.clear(); stream("0,FORWARD,wave_hello,manual", 30);
+  CHECK(said("ERR:unknown cmd:wave_hello") && !said("ACK:wave_hello"), "unknown command reported, not ACKed");
 
   std::cout << "pins (ESP32-S3)\n";
   stream("120,FORWARD,NONE,manual", 100);

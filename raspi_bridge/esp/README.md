@@ -29,15 +29,10 @@ Board: ESP32-S3 (Arduino IDE: "ESP32S3 Dev Module").
 **LED:**
 - GPIO 2 (onboard LED)
 
-**PCA9685 Servo Hub Channels:** (same as Arduino)
-- Gripper UpL: channel 13
-- Gripper UpR: channel 12
-- Gripper DownL: channel 9
-- Gripper DownR: channel 8
-- Bar UpL: channel 15
-- Bar UpR: channel 14
-- Bar DownL: channel 11
-- Bar DownR: channel 10
+**PCA9685 Servo Boards:** two boards on the same I2C bus
+- Board 0x60, grippers: UpL 0, UpR 1, DownL 2, DownR 3
+- Board 0x40, bars: UpL 15, UpR 14, DownL 13, DownR 12
+- Board 0x40, Axon: channel 8 (D-pad left `axon_open`, D-pad right `axon_close`)
 
 ## Key ESP32-Specific Changes
 
