@@ -105,9 +105,9 @@ int main() {
 
   std::cout << "other inputs\n";
   clear_out(); send("0,FORWARD,axon_open,manual");
-  CHECK(said("ACK:axon_open") && bar(chAxon) == 2000, "D-pad left: Axon on 0x40 channel 8 opens");
+  CHECK(said("ACK:axon_open") && bar(chAxon) == 1000, "D-pad left: Axon on 0x40 channel 8 opens to 0 deg (1000 us)");
   clear_out(); send("0,FORWARD,axon_close,manual");
-  CHECK(said("ACK:axon_close") && bar(chAxon) == 1150, "D-pad right: Axon closes");
+  CHECK(said("ACK:axon_close") && bar(chAxon) == 1555, "D-pad right: Axon closes to 100 deg (~1556 us)");
   CHECK(boards_kept_apart(), "grippers only on board 0x60 (ch 0-3), bars and Axon only on 0x40");
   clear_out(); send("0,FORWARD,wave_hello,manual");
   CHECK(said("ERR:unknown cmd:wave_hello") && !said("ACK:wave_hello"), "unknown command reported, not fake-ACKed");

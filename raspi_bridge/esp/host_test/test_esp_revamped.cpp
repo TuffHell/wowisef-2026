@@ -109,9 +109,9 @@ int main() {
   stream("0,FORWARD,up_attach,manual", 30); idle(delay_to_pose + 100);
   CHECK(upperGripperState == GRIPPER_CLOSED && lowerGripperState == GRIPPER_CLOSED, "up_attach: both recorded closed, as both are");
   Serial.out.clear(); stream("0,FORWARD,axon_open,manual", 30);
-  CHECK(said("ACK:axon_open") && bar(chAxon) == 2000, "D-pad left: Axon on 0x40 channel 8 opens");
+  CHECK(said("ACK:axon_open") && bar(chAxon) == 1000, "D-pad left: Axon on 0x40 channel 8 opens to 0 deg (1000 us)");
   Serial.out.clear(); stream("0,FORWARD,axon_close,manual", 30);
-  CHECK(said("ACK:axon_close") && bar(chAxon) == 1150, "D-pad right: Axon closes");
+  CHECK(said("ACK:axon_close") && bar(chAxon) == 1555, "D-pad right: Axon closes to 100 deg (~1556 us)");
   CHECK(boards_kept_apart(), "grippers only on board 0x60 (ch 0-3), bars and Axon only on 0x40");
   Serial.out.clear(); stream("0,FORWARD,wave_hello,manual", 30);
   CHECK(said("ERR:unknown cmd:wave_hello") && !said("ACK:wave_hello"), "unknown command reported, not ACKed");

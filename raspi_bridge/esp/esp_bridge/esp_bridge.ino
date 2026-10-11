@@ -187,10 +187,9 @@ const int chAxon = 8;
 const float open_position = 180;
 const float close_position = 27;
 const float angle_change = 35;
-// Axon servo (D-pad left / right). Starting values: the gripper open/close angles, inside the
-// standard 1000-2000 us pulse range. Replace them with the Axon's real angles once tested.
-const float axon_open_position = open_position;
-const float axon_close_position = close_position;
+// Axon servo (D-pad left / right), same angle-to-pulse scale as the grippers (0-180 -> 1000-2000 us)
+const float axon_open_position = 0;     // 1000 us
+const float axon_close_position = 100;  // ~1556 us
 
 // ===================== Helper Functions =====================
 static uint16_t angleToPulse(float angle, float minAngle=0, float maxAngle=180,
