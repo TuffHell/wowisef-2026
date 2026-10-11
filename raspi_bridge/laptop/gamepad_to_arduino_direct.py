@@ -71,6 +71,7 @@ VALID_COMMANDS = {
     "up_attach", "up_detach",
     "down_attach", "down_detach",
     "both_attach", "both_detach",
+    "axon_open", "axon_close",
     "estop",
 }
 
@@ -364,13 +365,10 @@ def stream_loop(ser: serial.Serial | None,
 
             # --- 4. Altitude control mode (separate field) ---
             # Right trigger (R2) > 10 -> hold_alt mode
-            # D-pad left -> zero_alt (pulse once)
             # Otherwise -> manual mode
             altitude_mode = "manual"
             if channels[5] > 10:  # R2 trigger
                 altitude_mode = "hold_alt"
-            elif just_pressed(13):  # D-pad left
-                altitude_mode = "zero_alt"
 
             # --- 5. Button command pulses (preserved from prelim script) ---
             new_cmd = None
@@ -386,6 +384,10 @@ def stream_loop(ser: serial.Serial | None,
                 new_cmd = "both_attach"
             elif just_pressed(18):    # Options
                 new_cmd = "both_detach"
+            elif just_pressed(13):    # D-pad left
+                new_cmd = "axon_open"
+            elif just_pressed(14):    # D-pad right
+                new_cmd = "axon_close"
             elif just_pressed(10):    # PS_BTN -> emergency stop
                 new_cmd = "estop"
 
