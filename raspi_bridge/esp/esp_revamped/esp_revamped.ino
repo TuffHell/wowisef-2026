@@ -237,7 +237,7 @@ String current_bar_pose = "parallel";
 char current_dir[10] = "FORWARD";
 
 // ===================== Servo timing configuration =====================
-const unsigned long delay_to_pose = 750;
+const unsigned long delay_to_pose = 1500;
 
 // ===================== Servo sequencing (non-blocking) =====================
 // Each gripper command is two moves delay_to_pose apart. The second move is scheduled here
@@ -918,7 +918,7 @@ void loop() {
   }
 
   if (current_speed > 0) {
-    if (now - led_flash_timer >= 500) {
+    if (now - led_flash_timer >= 150) {
       led_state = !led_state;
       digitalWrite(LED_PIN, led_state ? HIGH : LOW);
       led_flash_timer = now;

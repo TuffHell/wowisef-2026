@@ -58,7 +58,7 @@ int main() {
   CHECK(drive() == 0 && latched && currentMode == MODE_MANUAL,
         "motors stay stopped after the e-stop (the hold controller restarted them before)");
   CHECK(latched, "holding R2 does not clear the latch (it used to)");
-  stream("0,FORWARD,both_attach,manual", 30); idle(800);
+  stream("0,FORWARD,both_attach,manual", 30); idle(delay_to_pose + 100);
   CHECK(!latched, "a button command clears the latch (existing recovery path)");
   g_ground_mm = 500; stream("0,FORWARD,NONE,manual", 3000);
 
@@ -85,7 +85,7 @@ int main() {
   stream("0,FORWARD,NONE,hold_alt", 300);
   stream("0,FORWARD,both_attach", 30);                 // a dashboard button, through the Pi
   bool held_after_line = currentMode == MODE_HOLD_ALTITUDE;
-  stream("0,FORWARD,NONE,hold_alt", 800);                // the gamepad keeps streaming, R2 held
+  stream("0,FORWARD,NONE,hold_alt", delay_to_pose + 100);  // the gamepad keeps streaming, R2 held
   CHECK(held_after_line && currentMode == MODE_HOLD_ALTITUDE, "a 3-field dashboard command does not cancel hold");
   stream("0,FORWARD,NONE,manual", 100);
 
@@ -94,9 +94,9 @@ int main() {
   CHECK(said("ACK:up_detach") && upperGripperState == GRIPPER_OPEN, "up_detach opens the upper gripper");
   stream("0,FORWARD,both_detach,manual", 30);
   CHECK(said("ERR:busy:both_detach"), "second gripper command during the move is refused");
-  idle(800); Serial.out.clear(); stream("0,FORWARD,down_detach,manual", 30);
+  idle(delay_to_pose + 100); Serial.out.clear(); stream("0,FORWARD,down_detach,manual", 30);
   CHECK(said("ERR:interlock") && lowerGripperState == GRIPPER_CLOSED, "down_detach refused while the upper is open");
-  stream("0,FORWARD,up_attach,manual", 30); idle(800);
+  stream("0,FORWARD,up_attach,manual", 30); idle(delay_to_pose + 100);
   CHECK(upperGripperState == GRIPPER_CLOSED && lowerGripperState == GRIPPER_CLOSED, "up_attach: both recorded closed, as both are");
   Serial.out.clear(); stream("0,FORWARD,axon_open,manual", 30);
   CHECK(said("ERR:unknown cmd:axon_open") && !said("ACK:axon_open"), "unimplemented command reported, not ACKed");
