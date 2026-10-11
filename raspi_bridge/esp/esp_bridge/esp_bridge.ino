@@ -387,6 +387,10 @@ void emitStatusLine() {
 
 // ===================== Setup =====================
 void setup() {
+  // Each servo command blocks for delay_to_pose (1.5 s) while the laptop keeps streaming at
+  // 30 Hz (~1 KB in 1.5 s). The default 256-byte RX buffer overflows and drops the next
+  // command; 2 KB holds the backlog. Must be set before Serial.begin().
+  Serial.setRxBufferSize(2048);
   Serial.begin(115200);
   Serial.setTimeout(10);
 
@@ -404,6 +408,13 @@ void setup() {
   servo_hub.begin();
   servo_hub.reset();
   servo_hub.setPWMFreq(50);
+
+  // Report whether the PCA9685 answers on I2C, so a missing servo board shows in the
+  // laptop log ("[ARDUINO BOOT] pca9685 ...") instead of the servos silently not moving.
+  Wire.beginTransmission(0x40);
+  bool pca_ok = (Wire.endTransmission() == 0);
+  Serial.print("INIT: pca9685 ");
+  Serial.println(pca_ok ? "OK at 0x40" : "NOT FOUND at 0x40");
 
   // TOF sensor initialization
   pinMode(TOF_UP_XSHUT, OUTPUT);
@@ -435,10 +446,10 @@ void setup() {
   // Initialize servos to default positions
   setBarPosition("parallel");
   
-  // Initialize all gripper servos to closed position at startup
-  for (uint8_t ch = chServoUpL; ch <= chServoDownR; ch++) {
-    servo_hub.writeMicroseconds(ch, angleToPulse(close_position));
-  }
+  // Initialize all gripper servos to closed position at startup (the channels are not in
+  // ascending order, so a for loop from chServoUpL (13) to chServoDownR (8) never ran)
+  setServoAngle(chServoUpL, chServoUpR, close_position);
+  setServoAngle(chServoDownL, chServoDownR, close_position);
   
   Serial.println("ESP32 Bridge Ready");
 }
@@ -497,6 +508,7 @@ void loop() {
 void parseAndExecutePayload(String payload) {
   int firstComma = payload.indexOf(',');
   int secondComma = payload.indexOf(',', firstComma + 1);
+  int thirdComma = payload.indexOf(',', secondComma + 1);
 
   if (firstComma == -1 || secondComma == -1 || firstComma == 0) {
     Serial.println("ERR:malformed CSV");
@@ -505,7 +517,12 @@ void parseAndExecutePayload(String payload) {
 
   String speedStr = payload.substring(0, firstComma);
   String directionStr = payload.substring(firstComma + 1, secondComma);
-  String commandStr = payload.substring(secondComma + 1);
+  // gamepad_to_arduino_direct.py sends a 4th field (altitude mode) for esp_revamped.
+  // This bridge has no altitude control, so the field is accepted and ignored; without
+  // this the command arrived as e.g. "up_attach,manual" and no servo ever moved.
+  String commandStr = (thirdComma == -1) ? payload.substring(secondComma + 1)
+                                         : payload.substring(secondComma + 1, thirdComma);
+  commandStr.trim();
 
   if (speedStr.length() == 0 || directionStr.length() > 9 || commandStr.length() > 20) {
     Serial.println("ERR:field length");
@@ -611,7 +628,9 @@ void executeCommand(String cmd) {
     }
   }
   else {
-    Serial.print("ACK:");
+    // Not a command this sketch knows (e.g. axon_open / axon_close). Say so instead of
+    // echoing ACK, which made a command that did nothing look like it had worked.
+    Serial.print("ERR:unknown cmd:");
     Serial.println(cmd);
     return;
   }
