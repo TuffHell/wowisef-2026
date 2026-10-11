@@ -1,5 +1,6 @@
-// Minimal host stand-ins for the Arduino/ESP32 APIs esp_bridge.ino uses, so its command logic
-// can run on a Mac. Serial input is a queue the test fills; output and pin writes are recorded.
+// Minimal host stand-ins for the Arduino/ESP32 APIs esp_bridge.ino and esp_revamped.ino use, so
+// their command logic can run on a computer. Serial input is a queue the test fills; output, pin
+// writes and PWM are recorded.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -8,11 +9,16 @@
 #include <map>
 #include <deque>
 #include <cstdio>
+#include <cstdarg>
+#include <algorithm>
 #define ESP_ARDUINO_VERSION_MAJOR 3
 #define HIGH 1
 #define LOW 0
 #define OUTPUT 1
 using std::isnan; using std::isinf;
+typedef uint8_t byte;
+#define DEG_TO_RAD 0.017453292519943295
+template <class T, class L, class H> T constrain(T x, L lo, H hi) { return x < lo ? (T)lo : (x > hi ? (T)hi : x); }
 extern unsigned long g_now;
 inline unsigned long millis() { return g_now; }
 inline void delay(unsigned long ms) { g_now += ms; }
@@ -40,6 +46,7 @@ class String {
   bool operator==(const char* o) const { return s == o; }
   bool operator!=(const char* o) const { return s != o; }
   bool operator==(const String& o) const { return s == o.s; }
+  bool operator!=(const String& o) const { return s != o.s; }
 };
 
 struct SerialShim {
@@ -50,6 +57,8 @@ struct SerialShim {
   void print(const char* x) { out += x; } void print(const String& x) { out += x.s; }
   void print(long x) { out += std::to_string(x); } void print(int x) { out += std::to_string(x); }
   void print(unsigned x) { out += std::to_string(x); } void print(unsigned long x) { out += std::to_string(x); }
+  void print(double x, int digits) { char b[64]; snprintf(b, sizeof b, "%.*f", digits, x); out += b; }
+  void printf(const char* fmt, ...) { char b[256]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a); out += b; }
   template <class T> void println(const T& x) { print(x); out += "\n"; }
   void println() { out += "\n"; }
 };

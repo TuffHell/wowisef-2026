@@ -39,6 +39,17 @@
 #include <Adafruit_BNO055.h>
 #include <VL53L1X.h>
 
+// Types used in function signatures, declared before any function: the Arduino builder inserts
+// function prototypes above the first function in the file, so the types must exist there.
+enum Direction { STOP, FORWARD, BACKWARD };
+typedef void (*ServoStep)();  // the delayed second move of a gripper command
+struct PIDGConfig {
+  float kp;
+  float ki;
+  float kd;
+  float gravity_compensation;  // PWM offset to counteract weight
+};
+
 // ===================== ESP32-S3 Pin Configuration =====================
 // I2C pins
 #define I2C_SDA 21
@@ -65,9 +76,25 @@
 #define PWM_CHANNEL_A 0
 #define PWM_CHANNEL_B 1
 
+// ESP32 Arduino core 3.x removed ledcSetup()/ledcAttachPin() and made ledcWrite() take the
+// pin instead of a channel. MOTOR_PWM_A/B is what ledcWrite() needs on either core.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#define MOTOR_PWM_A MOTOR_A_EN
+#define MOTOR_PWM_B MOTOR_B_EN
+#else
+#define MOTOR_PWM_A PWM_CHANNEL_A
+#define MOTOR_PWM_B PWM_CHANNEL_B
+#endif
+
 // ===================== TOF Configuration (VL53L0X - original) =====================
 const int TOF_MEASUREMENT_TIME = 10000;
 const bool TOF_ENABLED = false;
+// Without a timeout the VL53L0X library waits forever for a reading, freezing loop() (and the
+// motors at their last speed) if a sensor drops off the bus.
+const uint16_t TOF_IO_TIMEOUT_MS = 50;
+// The VL53L1X ground sensor also starts at 0x29, the VL53L0X default. It is moved here at boot,
+// before the VL53L0Xs are released from reset, so the three never answer at the same address.
+const uint8_t GROUND_SENSOR_ADDR = 0x32;
 
 VL53L0X tof_up;
 VL53L0X tof_down;
@@ -144,13 +171,6 @@ unsigned long pid_last_update_ms = 0;
 // ===================== PID + Gravity Compensation Configuration =====================
 // Different coefficients based on gripper state AND bar pose
 // Bar pose affects mechanical advantage and force distribution
-struct PIDGConfig {
-  float kp;
-  float ki;
-  float kd;
-  float gravity_compensation;  // PWM offset to counteract weight
-};
-
 // ===== CLIMBING UP (upper detached, lower attached) =====
 
 // UP + PARALLEL BARS: Balanced load, standard climbing
@@ -219,13 +239,29 @@ char current_dir[10] = "FORWARD";
 // ===================== Servo timing configuration =====================
 const unsigned long delay_to_pose = 750;
 
+// ===================== Servo sequencing (non-blocking) =====================
+// Each gripper command is two moves delay_to_pose apart. The second move is scheduled here
+// rather than delay()-ed, so loop() keeps handling the e-stop, the link watchdog and the
+// altitude controller while the servos move. A second gripper command meanwhile gets ERR:busy.
+ServoStep pending_step = nullptr;
+unsigned long pending_step_at = 0;
+
+// ===================== Link watchdog =====================
+// The laptop sends a line every 33 ms. If nothing arrives for this long (laptop crashed,
+// USB cable out, Pi Wi-Fi dropped), the motors stop and altitude hold is cancelled.
+const unsigned long LINK_TIMEOUT_MS = 500;
+unsigned long last_rx_ms = 0;
+
+// The laptop repeats the altitude field on every line; only a change is acted on, so holding
+// R2 sets the hold target once and releasing it returns to manual.
+String last_alt_field = "manual";
+
 // ===================== LED =====================
 unsigned long led_flash_timer = 0;
 bool led_state = true;
 
 // ===================== Motor state =====================
 int current_speed = 0;
-enum Direction { STOP, FORWARD, BACKWARD };
 Direction current_direction = STOP;
 
 // ===================== Gripper State Tracking =====================
@@ -268,11 +304,16 @@ static uint16_t angleToPulse2(float angle, float minAngle=0, float maxAngle=300,
 
 // ===================== Motor Control (ESP32 PWM) =====================
 void setupMotorPWM() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(MOTOR_A_EN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(MOTOR_B_EN, PWM_FREQ, PWM_RESOLUTION);
+#else
   ledcSetup(PWM_CHANNEL_A, PWM_FREQ, PWM_RESOLUTION);
   ledcSetup(PWM_CHANNEL_B, PWM_FREQ, PWM_RESOLUTION);
   
   ledcAttachPin(MOTOR_A_EN, PWM_CHANNEL_A);
   ledcAttachPin(MOTOR_B_EN, PWM_CHANNEL_B);
+#endif
   
   pinMode(MOTOR_A_IN1, OUTPUT);
   pinMode(MOTOR_A_IN2, OUTPUT);
@@ -283,13 +324,13 @@ void setupMotorPWM() {
   digitalWrite(MOTOR_A_IN2, LOW);
   digitalWrite(MOTOR_B_IN1, LOW);
   digitalWrite(MOTOR_B_IN2, LOW);
-  ledcWrite(PWM_CHANNEL_A, 0);
-  ledcWrite(PWM_CHANNEL_B, 0);
+  ledcWrite(MOTOR_PWM_A, 0);
+  ledcWrite(MOTOR_PWM_B, 0);
 }
 
 void stopMotors() {
-  ledcWrite(PWM_CHANNEL_A, 0);
-  ledcWrite(PWM_CHANNEL_B, 0);
+  ledcWrite(MOTOR_PWM_A, 0);
+  ledcWrite(MOTOR_PWM_B, 0);
   digitalWrite(MOTOR_A_IN1, LOW);
   digitalWrite(MOTOR_A_IN2, LOW);
   digitalWrite(MOTOR_B_IN1, LOW);
@@ -319,8 +360,8 @@ void setMotors(int speed, Direction dir) {
     digitalWrite(MOTOR_B_IN2, HIGH);
   }
   
-  ledcWrite(PWM_CHANNEL_A, speed);
-  ledcWrite(PWM_CHANNEL_B, speed);
+  ledcWrite(MOTOR_PWM_A, speed);
+  ledcWrite(MOTOR_PWM_B, speed);
 }
 
 // ===================== Sensor init (original TOF) =====================
@@ -342,6 +383,8 @@ uint8_t initTOF() {
   delay(50);
   
   uint8_t r = 0;
+  tof_up.setTimeout(TOF_IO_TIMEOUT_MS);
+  tof_down.setTimeout(TOF_IO_TIMEOUT_MS);
   if (tof_up.init()) {
     tof_up.setAddress(0x30);
     tof_up.startContinuous();
@@ -388,6 +431,8 @@ void updateSensorRecovery(bool which_up) {
     case RECOVERY_INIT:
       // Non-blocking init attempt
       if (which_up) {
+        tof_up = VL53L0X();  // the reset chip answers at 0x29 again, not 0x30
+        tof_up.setTimeout(TOF_IO_TIMEOUT_MS);
         if (tof_up.init()) {
           tof_up.setAddress(0x30);
           tof_up.startContinuous();
@@ -398,6 +443,8 @@ void updateSensorRecovery(bool which_up) {
         }
         recovery_up_state = RECOVERY_IDLE;
       } else {
+        tof_down = VL53L0X();  // the reset chip answers at 0x29 again, not 0x31
+        tof_down.setTimeout(TOF_IO_TIMEOUT_MS);
         if (tof_down.init()) {
           tof_down.setAddress(0x31);
           tof_down.startContinuous();
@@ -469,10 +516,11 @@ void ensureSensorsAlive() {
 
   if (tof_up_mm == TOF_SENSOR_DOWN && (long)(now - tof_up_next_retry_ms) >= 0) {
     if (reinitOneSensor(true)) {
-      tof_up_ready = true;
+      // Recovery has only started; updateSensorRecovery() marks the sensor ready if it works
+      tof_up_ready = false;
       tof_up_mm = TOF_SENSOR_DOWN;
       tof_up_next_retry_ms = now + TOF_RETRY_AFTER_MS;
-      Serial.println("TOF: up re-init OK");
+      Serial.println("TOF: up re-init started");
     } else {
       tof_up_next_retry_ms = now + TOF_RETRY_AFTER_MS;
       Serial.println("TOF: up re-init FAIL");
@@ -483,10 +531,11 @@ void ensureSensorsAlive() {
 
   if (tof_down_mm == TOF_SENSOR_DOWN && (long)(now - tof_down_next_retry_ms) >= 0) {
     if (reinitOneSensor(false)) {
-      tof_down_ready = true;
+      // Recovery has only started; updateSensorRecovery() marks the sensor ready if it works
+      tof_down_ready = false;
       tof_down_mm = TOF_SENSOR_DOWN;
       tof_down_next_retry_ms = now + TOF_RETRY_AFTER_MS;
-      Serial.println("TOF: down re-init OK");
+      Serial.println("TOF: down re-init started");
     } else {
       tof_down_next_retry_ms = now + TOF_RETRY_AFTER_MS;
       Serial.println("TOF: down re-init FAIL");
@@ -512,6 +561,7 @@ bool initAltitudeSensors() {
     groundSensor.setTimeout(GROUND_SENSOR_TIMEOUT_MS);
     ground_sensor_ready = groundSensor.init();
     if (ground_sensor_ready) {
+      groundSensor.setAddress(GROUND_SENSOR_ADDR);
       groundSensor.setDistanceMode(VL53L1X::Long);
       groundSensor.setMeasurementTimingBudget(50000);
       groundSensor.startContinuous(50);
@@ -536,9 +586,10 @@ void readAltitudeSensors() {
     rollDeg = event.orientation.z;
   }
 
-  if (ground_sensor_ready) {
+  if (ground_sensor_ready && groundSensor.dataReady()) {
     uint16_t rawDist = groundSensor.read(false);
-    if (!groundSensor.timeoutOccurred() && rawDist < 4000) {
+    if (!groundSensor.timeoutOccurred() && groundSensor.ranging_data.range_status == VL53L1X::RangeValid &&
+        rawDist < 4000) {
       groundDistanceFiltered_mm = ALPHA_GROUND * rawDist + 
                                    (1.0f - ALPHA_GROUND) * groundDistanceFiltered_mm;
     }
@@ -592,7 +643,7 @@ const PIDGConfig& selectPIDGConfig() {
 
 // ===================== NEW: Altitude Control Logic with Adaptive PIDG =====================
 void updateAltitudeControl() {
-  if (currentMode == MODE_MANUAL) {
+  if (currentMode == MODE_MANUAL || latched) {
     return;
   }
 
@@ -726,7 +777,29 @@ void emitStatusLine() {
 }
 
 // ===================== Setup =====================
+// Boot report: whether I2C started on these pins, and every device that answers. PCA9685
+// servo boards sit at 0x40-0x47 (set by their address jumpers), the BNO055 at 0x28, the
+// VL53L1X at 0x32 after setup moves it, VL53L0Xs at 0x29/0x30/0x31.
+void reportI2CBus(bool started) {
+  if (!started) {
+    Serial.printf("INIT: I2C failed to start on SDA=%d SCL=%d, no servo or sensor can work\n", I2C_SDA, I2C_SCL);
+    return;
+  }
+  Serial.print("INIT: i2c devices:");
+  int found = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf(" 0x%02X", addr);
+      found++;
+    }
+  }
+  Serial.println(found ? "" : " none");
+}
+
 void setup() {
+  // Headroom for the 30 Hz stream if loop() is ever held up (e.g. a sensor re-init)
+  Serial.setRxBufferSize(2048);
   Serial.begin(115200);
   Serial.setTimeout(10);
 
@@ -736,7 +809,7 @@ void setup() {
   setupMotorPWM();
   stopMotors();
 
-  Wire.begin(I2C_SDA, I2C_SCL);
+  bool i2c_ok = Wire.begin(I2C_SDA, I2C_SCL);
   
   servo_hub.begin();
   servo_hub.reset();
@@ -746,6 +819,14 @@ void setup() {
   pinMode(TOF_DOWN_XSHUT, OUTPUT);
   digitalWrite(TOF_UP_XSHUT, LOW);
   digitalWrite(TOF_DOWN_XSHUT, LOW);
+
+  // Ground sensor first, while the VL53L0Xs are held in reset: it shares their 0x29 default
+  // address and moves to GROUND_SENSOR_ADDR before they come up.
+  if (initAltitudeSensors()) {
+    Serial.println("Altitude sensors OK");
+  } else {
+    Serial.println("Altitude sensors FAIL (continuing anyway)");
+  }
 
   uint8_t tof_r = initTOF();
   tof_up_ready = (tof_r & TOF_INIT_UP_OK) != 0;
@@ -768,17 +849,13 @@ void setup() {
     tof_down.setMeasurementTimingBudget(TOF_MEASUREMENT_TIME);
   }
 
-  if (initAltitudeSensors()) {
-    Serial.println("Altitude sensors OK");
-  } else {
-    Serial.println("Altitude sensors FAIL (continuing anyway)");
-  }
+  reportI2CBus(i2c_ok);
 
   setBarPosition("parallel");
   
-  for (uint8_t ch = chServoUpL; ch <= chServoDownR; ch++) {
-    servo_hub.writeMicroseconds(ch, angleToPulse(close_position));
-  }
+  // Both grippers closed at power-on. (The old for loop ran from chServoUpL (13) up to
+  // chServoDownR (8), so it never ran.)
+  closeBothGrippers();
   
   Serial.println("ESP32-S3 Bridge Ready");
 }
@@ -797,12 +874,27 @@ void loop() {
     }
     
     if (payload.length() > 0) {
+      last_rx_ms = millis();
       if (payload.startsWith("WARN:")) {
         parseAndExecuteWarning(payload);
       } else {
         parseAndExecutePayload(payload);
       }
     }
+  }
+
+  // Second move of a gripper command, once delay_to_pose has passed
+  if (pending_step && (long)(now - pending_step_at) >= 0) {
+    ServoStep step = pending_step;
+    pending_step = nullptr;
+    step();
+  }
+
+  // Link watchdog: no line from the laptop for LINK_TIMEOUT_MS -> stop and leave altitude hold
+  if ((current_speed > 0 || currentMode != MODE_MANUAL) && (long)(now - last_rx_ms) > (long)LINK_TIMEOUT_MS) {
+    forceManual();
+    stopMotors();
+    Serial.println("ERR:link timeout, motors stopped");
   }
 
   if ((long)(now - next_watchdog_ms) >= 0) {
@@ -864,7 +956,7 @@ void parseAndExecutePayload(String payload) {
   } else {
     // Old format: speed,direction,command
     commandStr = payload.substring(secondComma + 1);
-    altitudeModeStr = "manual";  // Default to manual mode
+    altitudeModeStr = "";  // no altitude field (Pi bridge, dashboard buttons): leave the mode alone
   }
 
   commandStr.trim();
@@ -876,7 +968,8 @@ void parseAndExecutePayload(String payload) {
   }
 
   if (latched) {
-    if (commandStr == "NONE" && altitudeModeStr == "manual") {
+    // Only a button command clears the latch. Holding R2 (hold_alt) used to clear it too.
+    if (commandStr == "NONE") {
       return;
     }
     latched = false;
@@ -900,8 +993,10 @@ void parseAndExecutePayload(String payload) {
   strncpy(current_dir, directionStr.c_str(), sizeof(current_dir) - 1);
   current_dir[sizeof(current_dir) - 1] = '\0';
 
-  // Process altitude mode changes first
-  if (altitudeModeStr != "manual" && altitudeModeStr != "") {
+  // Altitude mode: act only when the field changes (it repeats at 30 Hz). Before, "manual" was
+  // never acted on, so releasing R2 never left hold, and every hold_alt line reset the target.
+  if (altitudeModeStr.length() > 0 && altitudeModeStr != last_alt_field) {
+    last_alt_field = altitudeModeStr;
     executeAltitudeMode(altitudeModeStr);
   }
 
@@ -922,6 +1017,7 @@ void parseAndExecuteWarning(String payload) {
   if (sensor != "up" && sensor != "down" && sensor != "tilt") {
     return;
   }
+  forceManual();
   stopMotors();
   digitalWrite(LED_PIN, LOW);
   latched = true;
@@ -952,29 +1048,63 @@ void setDriveMotors(int speed, String direction) {
   digitalWrite(LED_PIN, HIGH);
 }
 
+// Back to stick control with the PID cleared; used by manual, the e-stop, warnings and the
+// link watchdog.
+void forceManual() {
+  currentMode = MODE_MANUAL;
+  pidIntegral = 0.0f;
+  pid_last_error = 0.0f;
+}
+
 void executeAltitudeMode(String mode) {
   if (mode == "hold_alt") {
+    // Without both sensors the controller does nothing, and the stick is ignored outside
+    // manual mode, so the motors would keep their last speed with nothing controlling them.
+    if (!bno_ready || !ground_sensor_ready) {
+      Serial.println("ERR:hold_alt needs the BNO055 and VL53L1X; staying in manual");
+      return;
+    }
     currentMode = MODE_HOLD_ALTITUDE;
     targetAltitude_mm = trueVerticalHeight_mm;
+    pid_last_update_ms = millis();
   }
   else if (mode == "zero_alt") {
     groundZeroOffset_mm = groundDistanceFiltered_mm;
     trueVerticalHeight_mm = 0.0f;
     currentMode = MODE_MANUAL;
-    pid_integral = 0.0f;
+    pidIntegral = 0.0f;
     pid_last_error = 0.0f;
   }
   else if (mode == "manual") {
-    currentMode = MODE_MANUAL;
-    pid_integral = 0.0f;
-    pid_last_error = 0.0f;
+    forceManual();
   }
   else if (mode == "set_alt") {
-    currentMode = MODE_RUN_TO_ALTITUDE;
+    // Nothing sets targetAltitude_mm for this mode, so it would drive toward whatever value
+    // was left over (0 mm, the ground, after zero_alt). Refused until a target is sent.
+    Serial.println("ERR:set_alt has no target altitude; ignored");
+  }
+  else {
+    Serial.print("ERR:unknown altitude mode:");
+    Serial.println(mode);
   }
 }
 
 void executeCommand(String cmd) {
+  bool gripper_cmd = cmd == "up_attach" || cmd == "up_detach" || cmd == "down_attach" ||
+                     cmd == "down_detach" || cmd == "both_attach" || cmd == "both_detach";
+  if (gripper_cmd && pending_step) {
+    Serial.print("ERR:busy:");
+    Serial.println(cmd);
+    return;
+  }
+  if ((cmd == "up_detach" && lowerGripperState == GRIPPER_OPEN) ||
+      (cmd == "down_detach" && upperGripperState == GRIPPER_OPEN)) {
+    // Opening this gripper too would leave nothing clamped to the post
+    Serial.print("ERR:interlock, other gripper is open:");
+    Serial.println(cmd);
+    return;
+  }
+
   if (cmd == "down_detach") {
     down_detach();
   }
@@ -994,6 +1124,7 @@ void executeCommand(String cmd) {
     both_detach();
   }
   else if (cmd == "estop") {
+    forceManual();  // otherwise the altitude controller restarted the motors on the next loop
     stopMotors();
     digitalWrite(LED_PIN, LOW);
     if (!latched) {
@@ -1003,10 +1134,10 @@ void executeCommand(String cmd) {
     }
   }
   else {
-    Serial.print("ACK:");
+    // Not a command this sketch knows (e.g. axon_open / axon_close). Say so instead of
+    // echoing ACK, which made a command that did nothing look like it had worked.
+    Serial.print("ERR:unknown cmd:");
     Serial.println(cmd);
-    strncpy(last_cmd, cmd.c_str(), sizeof(last_cmd) - 1);
-    last_cmd[sizeof(last_cmd) - 1] = '\0';
     return;
   }
   
@@ -1043,50 +1174,55 @@ void setServoAngle(int channelL, int channelR, float angle) {
   servo_hub.writeMicroseconds(channelR, angleToPulse(180 - angle));
 }
 
+void scheduleStep(ServoStep step) {
+  pending_step = step;
+  pending_step_at = millis() + delay_to_pose;
+}
+
+// Every attach closes both grippers, as before; both are now recorded as closed (before, only
+// the named one was, so the gain schedule saw a gripper as open that was closed)
+void closeBothGrippers() {
+  setServoAngle(chServoUpL, chServoUpR, close_position);
+  setServoAngle(chServoDownL, chServoDownR, close_position);
+  upperGripperState = GRIPPER_CLOSED;
+  lowerGripperState = GRIPPER_CLOSED;
+}
+
+void openBothGrippers() {
+  setServoAngle(chServoUpL, chServoUpR, open_position);
+  setServoAngle(chServoDownL, chServoDownR, open_position);
+  upperGripperState = GRIPPER_OPEN;
+  lowerGripperState = GRIPPER_OPEN;
+}
+
 void up_detach() {
   setServoAngle(chServoUpL, chServoUpR, open_position);
-  delay(delay_to_pose);
-  setBarPosition("up_detach");
-  upperGripperState = GRIPPER_OPEN;  // Track state
+  upperGripperState = GRIPPER_OPEN;
+  scheduleStep([] { setBarPosition("up_detach"); });
 }
 
 void down_detach() {
   setServoAngle(chServoDownL, chServoDownR, open_position);
-  delay(delay_to_pose);
-  setBarPosition("down_detach");
-  lowerGripperState = GRIPPER_OPEN;  // Track state
+  lowerGripperState = GRIPPER_OPEN;
+  scheduleStep([] { setBarPosition("down_detach"); });
 }
 
 void up_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
-  upperGripperState = GRIPPER_CLOSED;  // Track state
+  scheduleStep(closeBothGrippers);
 }
 
 void down_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
-  lowerGripperState = GRIPPER_CLOSED;  // Track state
+  scheduleStep(closeBothGrippers);
 }
 
 void both_attach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, close_position);
-  setServoAngle(chServoDownL, chServoDownR, close_position);
-  upperGripperState = GRIPPER_CLOSED;  // Track state
-  lowerGripperState = GRIPPER_CLOSED;  // Track state
+  scheduleStep(closeBothGrippers);
 }
 
 void both_detach() {
   setBarPosition("parallel");
-  delay(delay_to_pose);
-  setServoAngle(chServoUpL, chServoUpR, open_position);
-  setServoAngle(chServoDownL, chServoDownR, open_position);
-  upperGripperState = GRIPPER_OPEN;  // Track state
-  lowerGripperState = GRIPPER_OPEN;  // Track state
+  scheduleStep(openBothGrippers);
 }

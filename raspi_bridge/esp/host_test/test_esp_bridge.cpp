@@ -9,6 +9,8 @@ unsigned long g_now = 1000;
 std::map<int, int> g_pin, g_pwm, g_servo_us;
 SerialShim Serial;
 WireShim Wire;
+bool g_i2c_ok = true;
+std::set<int> g_i2c_devices = {0x40};
 #include "build/esp_bridge_pre.cpp"
 
 static int fails = 0;
@@ -33,7 +35,7 @@ int main() {
   setup();
   std::cout << "boot\n";
   CHECK(upper_closed() && lower_closed(), "both grippers closed at power-on (old 13..8 loop never ran)");
-  CHECK(said("INIT: pca9685 OK at 0x40"), "boot line reports the servo board");
+  CHECK(said("INIT: i2c devices: 0x40"), "boot line lists the servo board on the I2C bus");
 
   std::cout << "laptop's 4-field lines (gamepad_to_arduino_direct.py)\n";
   clear_out(); send("150,FORWARD,NONE,manual");

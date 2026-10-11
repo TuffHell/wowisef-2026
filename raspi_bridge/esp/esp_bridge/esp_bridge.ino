@@ -434,6 +434,25 @@ void emitStatusLine() {
 }
 
 // ===================== Setup =====================
+// Boot report: whether I2C started on these pins, and every device that answers. PCA9685
+// servo boards sit at 0x40-0x47 (set by their address jumpers), VL53L0Xs at 0x29/0x30/0x31.
+void reportI2CBus(bool started) {
+  if (!started) {
+    Serial.printf("INIT: I2C failed to start on SDA=%d SCL=%d, no servo or sensor can work\n", I2C_SDA, I2C_SCL);
+    return;
+  }
+  Serial.print("INIT: i2c devices:");
+  int found = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf(" 0x%02X", addr);
+      found++;
+    }
+  }
+  Serial.println(found ? "" : " none");
+}
+
 void setup() {
   // Headroom for the 30 Hz stream if loop() is ever held up (e.g. a sensor re-init); the
   // default 256 bytes is under 10 lines. Must be set before Serial.begin().
@@ -449,19 +468,16 @@ void setup() {
   stopMotors();
 
   // Initialize I2C
-  Wire.begin(I2C_SDA, I2C_SCL);
+  bool i2c_ok = Wire.begin(I2C_SDA, I2C_SCL);
   
   // Initialize servo hub
   servo_hub.begin();
   servo_hub.reset();
   servo_hub.setPWMFreq(50);
 
-  // Report whether the PCA9685 answers on I2C, so a missing servo board shows in the
-  // laptop log ("[ARDUINO BOOT] pca9685 ...") instead of the servos silently not moving.
-  Wire.beginTransmission(0x40);
-  bool pca_ok = (Wire.endTransmission() == 0);
-  Serial.print("INIT: pca9685 ");
-  Serial.println(pca_ok ? "OK at 0x40" : "NOT FOUND at 0x40");
+  // Shows in the laptop log as "[ARDUINO BOOT] ...": a missing servo board, or I2C pins that
+  // don't exist on this chip, show up here instead of as servos silently not moving.
+  reportI2CBus(i2c_ok);
 
   // TOF sensor initialization
   pinMode(TOF_UP_XSHUT, OUTPUT);
