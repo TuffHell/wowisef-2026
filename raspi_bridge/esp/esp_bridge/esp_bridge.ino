@@ -63,6 +63,20 @@
 #define PWM_CHANNEL_A 0
 #define PWM_CHANNEL_B 1
 
+// ESP32 Arduino core 3.x removed ledcSetup()/ledcAttachPin() and made ledcWrite() take the
+// pin instead of a channel. MOTOR_PWM_A/B is what ledcWrite() needs on either core.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#define MOTOR_PWM_A MOTOR_A_EN
+#define MOTOR_PWM_B MOTOR_B_EN
+#else
+#define MOTOR_PWM_A PWM_CHANNEL_A
+#define MOTOR_PWM_B PWM_CHANNEL_B
+#endif
+
+// Declared before any function: the Arduino builder inserts function prototypes above the
+// first function in the file, and setMotors(int, Direction) needs the type to exist there.
+enum Direction { STOP, FORWARD, BACKWARD };
+
 // ===================== TOF Configuration =====================
 const int TOF_MEASUREMENT_TIME = 10000;
 const bool TOF_ENABLED = false;  // Set to true to enable TOF sensors
@@ -124,7 +138,6 @@ bool led_state = true;
 
 // ===================== Motor state =====================
 int current_speed = 0;
-enum Direction { STOP, FORWARD, BACKWARD };
 Direction current_direction = STOP;
 
 // ===================== Servo Hub =====================
@@ -163,13 +176,19 @@ static uint16_t angleToPulse2(float angle, float minAngle=0, float maxAngle=300,
 
 // ===================== Motor Control (ESP32 PWM) =====================
 void setupMotorPWM() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Core 3.x: attach each enable pin with its frequency and resolution in one call
+  ledcAttach(MOTOR_A_EN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(MOTOR_B_EN, PWM_FREQ, PWM_RESOLUTION);
+#else
   // Configure PWM channels for motor speed control
   ledcSetup(PWM_CHANNEL_A, PWM_FREQ, PWM_RESOLUTION);
   ledcSetup(PWM_CHANNEL_B, PWM_FREQ, PWM_RESOLUTION);
-  
+
   // Attach PWM channels to pins
   ledcAttachPin(MOTOR_A_EN, PWM_CHANNEL_A);
   ledcAttachPin(MOTOR_B_EN, PWM_CHANNEL_B);
+#endif
   
   // Configure direction pins
   pinMode(MOTOR_A_IN1, OUTPUT);
@@ -182,13 +201,13 @@ void setupMotorPWM() {
   digitalWrite(MOTOR_A_IN2, LOW);
   digitalWrite(MOTOR_B_IN1, LOW);
   digitalWrite(MOTOR_B_IN2, LOW);
-  ledcWrite(PWM_CHANNEL_A, 0);
-  ledcWrite(PWM_CHANNEL_B, 0);
+  ledcWrite(MOTOR_PWM_A, 0);
+  ledcWrite(MOTOR_PWM_B, 0);
 }
 
 void stopMotors() {
-  ledcWrite(PWM_CHANNEL_A, 0);
-  ledcWrite(PWM_CHANNEL_B, 0);
+  ledcWrite(MOTOR_PWM_A, 0);
+  ledcWrite(MOTOR_PWM_B, 0);
   digitalWrite(MOTOR_A_IN1, LOW);
   digitalWrite(MOTOR_A_IN2, LOW);
   digitalWrite(MOTOR_B_IN1, LOW);
@@ -220,8 +239,8 @@ void setMotors(int speed, Direction dir) {
   }
   
   // Set speed (0-255 for 8-bit PWM)
-  ledcWrite(PWM_CHANNEL_A, speed);
-  ledcWrite(PWM_CHANNEL_B, speed);
+  ledcWrite(MOTOR_PWM_A, speed);
+  ledcWrite(MOTOR_PWM_B, speed);
 }
 
 // ===================== Sensor init =====================
