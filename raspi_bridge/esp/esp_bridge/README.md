@@ -515,6 +515,11 @@ When `TOF_ENABLED = true`:
 | `both_detach` | Release both grippers | → parallel    | Both open      | 1500 ms   |
 | `estop`       | Emergency stop        | No change     | No change      | Immediate |
 
+`both_detach` drops the robot if it is on the post, so it is only for mounting the robot and taking it off at
+ground level. One `both_detach` only replies `ERR:confirm...`; a second one 0.4 to 5 s later opens both
+grippers, and only while the drive is stopped (speed 0; on esp_revamped also no altitude hold). Driving,
+the e-stop or any other gripper command cancels the first press. On the gamepad: press Options twice.
+
 
 
 
@@ -806,7 +811,8 @@ WARNED:down
   ```
 3. **Servo Test**
   ```
-   Send: 0,FORWARD,both_detach
+   Send: 0,FORWARD,both_detach   (replies ERR:confirm, nothing moves)
+   Send: 0,FORWARD,both_detach   (again, within 5 s)
    Expected: All grippers open, 1.5s delay
    Status: {"ack":"both_detach",...}
   ```

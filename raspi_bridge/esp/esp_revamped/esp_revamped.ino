@@ -272,6 +272,15 @@ enum GripperState { GRIPPER_OPEN, GRIPPER_CLOSED };
 GripperState upperGripperState = GRIPPER_CLOSED;  // Start with both closed
 GripperState lowerGripperState = GRIPPER_CLOSED;
 
+// Opening both grippers drops the robot if it is on the post, so it is only for mounting the robot
+// and taking it off at ground level. The first both_detach only arms it and asks for confirmation;
+// a second both_detach between BOTH_OPEN_MIN_GAP_MS and BOTH_OPEN_WINDOW_MS later opens both, and
+// only while the drive is stopped. Driving, the e-stop or any other gripper command cancels it.
+const unsigned long BOTH_OPEN_MIN_GAP_MS = 400;   // lines of the same button press arriving again
+const unsigned long BOTH_OPEN_WINDOW_MS = 5000;
+bool both_open_armed = false;
+unsigned long both_open_armed_at = 0;
+
 // ===================== Servo Hubs =====================
 // Two PCA9685 boards: 0x40 carries the bar (linkage) servos and the Axon, 0x60 the gripper servos
 const uint8_t SERVO_HUB_ADDR = 0x40;
@@ -1028,6 +1037,7 @@ void parseAndExecutePayload(String payload) {
   if (currentMode == MODE_MANUAL) {
     setDriveMotors(speedVal, directionStr);
   }
+  if (speedVal > 0 || currentMode != MODE_MANUAL) both_open_armed = false;   // driving cancels a pending both_detach
 
   // Execute button commands
   if (commandStr != "NONE") {
@@ -1113,6 +1123,28 @@ void executeAltitudeMode(String mode) {
   }
 }
 
+// True only for the confirming second press of both_detach; otherwise arms it or refuses, and says why
+bool confirmBothDetach(bool drive_running) {
+  unsigned long since = millis() - both_open_armed_at;
+  if (drive_running) {
+    both_open_armed = false;
+    Serial.println("ERR:interlock, stop driving before opening both grippers:both_detach");
+    return false;
+  }
+  if (both_open_armed && since < BOTH_OPEN_MIN_GAP_MS) {
+    return false;   // the same press, repeated by the laptop
+  }
+  if (both_open_armed && since <= BOTH_OPEN_WINDOW_MS) {
+    both_open_armed = false;
+    return true;
+  }
+  both_open_armed = true;
+  both_open_armed_at = millis();
+  Serial.println("ERR:confirm, this opens both grippers and drops the robot if it is on the post. "
+                 "Send both_detach again within 5 s to confirm:both_detach");
+  return false;
+}
+
 void executeCommand(String cmd) {
   bool gripper_cmd = cmd == "up_attach" || cmd == "up_detach" || cmd == "down_attach" ||
                      cmd == "down_detach" || cmd == "both_attach" || cmd == "both_detach";
@@ -1127,6 +1159,12 @@ void executeCommand(String cmd) {
     Serial.print("ERR:interlock, other gripper is open:");
     Serial.println(cmd);
     return;
+  }
+  if (cmd == "both_detach") {
+    // The altitude hold can start the motors by itself, so it counts as driving
+    if (!confirmBothDetach(current_speed > 0 || currentMode != MODE_MANUAL)) return;
+  } else if (gripper_cmd || cmd == "estop") {
+    both_open_armed = false;
   }
 
   if (cmd == "down_detach") {

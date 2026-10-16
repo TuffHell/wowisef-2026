@@ -56,6 +56,7 @@ Board: ESP32-S3 (Arduino IDE: "ESP32S3 Dev Module").
 - `speed`: 0-255 (PWM duty cycle)
 - `direction`: FORWARD or BACKWARD
 - `command`: NONE, up_attach, up_detach, down_attach, down_detach, both_attach, both_detach, estop
+  (`both_detach` opens both grippers only when sent twice, 0.4 to 5 s apart, with the drive stopped)
 
 **ESP32 → Pi (line-oriented):**
 ```

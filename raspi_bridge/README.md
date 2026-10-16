@@ -95,7 +95,8 @@ Pi -> Arduino (CSV, newline terminated):
 
 `direction` is `FORWARD` or `BACKWARD`. `cmd` is one of `NONE`,
 `up_attach`, `up_detach`, `down_attach`, `down_detach`, `both_attach`,
-`both_detach`, `estop`.
+`both_detach`, `estop`. On the ESP32 firmware, `both_detach` must be sent twice
+(0.4 to 5 s apart, drive stopped) before both grippers open.
 
 Pi -> Arduino (safety latch, newline terminated):
 

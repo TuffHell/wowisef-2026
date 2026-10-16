@@ -116,6 +116,21 @@ int main() {
   Serial.out.clear(); stream("0,FORWARD,wave_hello,manual", 30);
   CHECK(said("ERR:unknown cmd:wave_hello") && !said("ACK:wave_hello"), "unknown command reported, not ACKed");
 
+  std::cout << "opening both grippers: second press, drive stopped (only for mounting at ground level)\n";
+  auto both_closed = [] { return upperGripperState == GRIPPER_CLOSED && lowerGripperState == GRIPPER_CLOSED; };
+  Serial.out.clear(); stream("0,FORWARD,both_detach,manual", 30); idle(delay_to_pose + 100);
+  CHECK(said("ERR:confirm") && both_closed() && grip(chServoUpL) == 1150, "one both_detach only asks for confirmation");
+  Serial.out.clear(); stream("0,FORWARD,both_detach,manual", 30); idle(delay_to_pose + 100);
+  CHECK(said("ACK:both_detach") && upperGripperState == GRIPPER_OPEN && lowerGripperState == GRIPPER_OPEN,
+        "a second press within 5 s opens both");
+  stream("0,FORWARD,both_attach,manual", 30); idle(delay_to_pose + 100);
+  Serial.out.clear(); stream("0,FORWARD,both_detach,manual", 90); idle(delay_to_pose + 100);
+  CHECK(both_closed() && !said("ACK:both_detach"), "three lines 30 ms apart are one press, not a confirmation");
+  stream("0,FORWARD,NONE,hold_alt", 300);
+  Serial.out.clear(); stream("0,FORWARD,both_detach,hold_alt", 30);
+  CHECK(said("ERR:interlock, stop driving") && both_closed(), "refused while the altitude hold can drive the motors");
+  stream("0,FORWARD,NONE,manual", 100); idle(5000);
+
   std::cout << "pins (ESP32-S3)\n";
   stream("120,FORWARD,NONE,manual", 100);
   CHECK(g_pin[MOTOR_A_IN1] == 1 && g_pin[MOTOR_A_IN2] == 0 && g_pin[MOTOR_B_IN1] == 1 && g_pin[MOTOR_B_IN2] == 0,

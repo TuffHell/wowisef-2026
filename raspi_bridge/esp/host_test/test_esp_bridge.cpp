@@ -71,6 +71,25 @@ int main() {
   CHECK(said("ERR:busy:both_detach") && lower_closed(), "second command during the 1.5 s move is refused");
   idle(1600); send("0,FORWARD,up_attach,manual"); idle(1600);
 
+  std::cout << "opening both grippers: second press, drive stopped (only for mounting at ground level)\n";
+  clear_out(); send("0,FORWARD,both_detach,manual"); idle(1600);
+  CHECK(said("ERR:confirm") && upper_closed() && lower_closed(), "one both_detach only asks for confirmation; both stay closed");
+  clear_out(); send("0,FORWARD,both_detach,manual"); idle(1600);
+  CHECK(said("ACK:both_detach") && upper_opened() && lower_opened(), "a second both_detach within 5 s opens both");
+  send("0,FORWARD,both_attach,manual"); idle(1600);
+  clear_out(); send("0,FORWARD,both_detach,manual", 20); send("0,FORWARD,both_detach,manual", 20); idle(1600);
+  CHECK(upper_closed() && lower_closed() && !said("ACK:both_detach"), "the same press repeated within 0.4 s is not a second press");
+  idle(5000); clear_out(); send("0,FORWARD,both_detach,manual"); idle(1600);
+  CHECK(said("ERR:confirm") && upper_closed() && lower_closed(), "a first press more than 5 s old has expired");
+  clear_out(); send("150,FORWARD,both_detach,manual"); send("0,FORWARD,NONE,manual");
+  CHECK(said("ERR:interlock, stop driving") && upper_closed() && lower_closed(), "refused while the drive is running");
+  clear_out(); idle(600); send("0,FORWARD,both_detach,manual"); idle(1600);
+  CHECK(said("ERR:confirm") && upper_closed() && lower_closed(), "driving cancelled the first press");
+  send("0,FORWARD,down_attach,manual"); idle(1600);
+  clear_out(); send("0,FORWARD,both_detach,manual"); idle(1600);
+  CHECK(said("ERR:confirm") && upper_closed() && lower_closed(), "any other gripper command cancels the first press");
+  idle(5000);
+
   std::cout << "e-stop works while a servo move is in progress\n";
   send("150,FORWARD,NONE,manual");
   clear_out(); send("150,FORWARD,down_detach,manual", 20);
